@@ -46,7 +46,11 @@ _start:
 
 ; Wczytywanie i konwersja paremetrów wielomianu diakrytynizującego.
     lea     rbp, [rsp + 2*8]        ; adres args[0]
+    mov     rsi, [rbp]
+    test    rsi, rsi
+    jz      failure                 ; mamy zero parametrów
 
+; FIXME: sprawdzenie czy jest przynajmniej jeden paremetr
 args_reader:
     mov     rsi, [rbp]              ; adres kolejnego argumentu
     test    rsi, rsi
@@ -99,16 +103,16 @@ next_arg:
 
     ; TEST
     ; mov     rdx, rdi
-    mov     eax, SYS_WRITE
-    mov     edi, STDOUT
-    ; sub     rdx, rsi                ; liczba bajtów do wypisania
-    mov     rdx, rcx
-    syscall
-    mov     eax, SYS_WRITE
-    mov     edi, STDOUT
-    mov     rsi, new_line           ; wypisujemy znak nowej lini
-    mov     edx, 1                  ; wypisujemy jeden znak
-    syscall
+    ; mov     eax, SYS_WRITE
+    ; mov     edi, STDOUT
+    ; ; sub     rdx, rsi                ; liczba bajtów do wypisania
+    ; mov     rdx, rcx
+    ; syscall
+    ; mov     eax, SYS_WRITE
+    ; mov     edi, STDOUT
+    ; mov     rsi, new_line           ; wypisujemy znak nowej lini
+    ; mov     edx, 1                  ; wypisujemy jeden znak
+    ; syscall
     ; /TEST
 
     inc     dword [args_num]              ; zwiększamy licznik argumentów
@@ -208,13 +212,16 @@ rest_loop:
     mov     rdx, 1
     syscall
 
+    shl     ebx, 8                   ; robimy miejsce na kolejny bajt
+
     ; sprawdzamy czy aby na pewno wczytaliśmy kod postaci 10xxxxxx
-    mov     bl, [chr]
+    mov     bl, [chr]               ; ładujemy kolejny bajt do rejestru bl
     cmp     bl, 0x80
     jb      failure
 
-    mov     byte [r13], bl           ; buforujemy to co wczytaliśmy
-    inc     r13
+    ;
+    ; mov     byte [r13], bl           ; buforujemy to co wczytaliśmy
+    ; inc     r13
 
     ; TEST
     ; mov     rax, SYS_WRITE
@@ -227,9 +234,20 @@ rest_loop:
     dec     r12D
     jmp     rest_loop
 
-; udało nam się wczytać znak w utf-8
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+; udało nam się wczytać znak w utf-8, w rejestrzeb ebx mamy jego pełne kodowanie,
+; ponadto w r8 mamy długość jego zapisu bitowego a w r10 mamy naszą wartość mod
 ascii_to_hex:
-    jmp     print
+    ; rejestry:
+    ;   -> rdx:rax - rax wynik, rdx reszta
+    ;   -> rbx     - arguement wielomianu
+    ;
+
+    ; TEST
+    ; jmp     write_to_buffer
+    ; /TEST
+    mov     eax, ebx
 
     ; jeszcze raz klasyfikujemy w celu odpowiedniej konwersjii
     cmp     r8, 2
@@ -244,22 +262,112 @@ ascii_to_hex:
     jmp failure
 
 byte2_to_hex:
-    mov     r9D, 0x1F3F             ; maska bitowa konwersji z utf8 na hex
-
+    mov     r9D, 0x00001F3F             ; maska bitowa konwersji z utf8 na hex
+    pext    ebx, eax, r9D           ; rzeczywista konwersja na hex
+    jmp     poly
 
 byte3_to_hex:
-    mov     r9D, 0x0F3F3F           ; maska bitowa konwersji z utf8 na hex
-
+    mov     r9D, 0x000F3F3F           ; maska bitowa konwersji z utf8 na hex
+    pext    ebx, eax, r9D           ; rzeczywista konwersja na hex
+    jmp     poly
 
 byte4_to_hex:
     mov     r9D, 0x073F3F3F         ; maska bitowa konwersji z utf8 na hex
+    pext    ebx, eax, r9D           ; rzeczywista konwersja na hex
+    jmp     poly
 
-
-poly_val:
+poly:
     ; wyliczamy wartość wielomianu diakrytynizującego dla argumentu w hex
+    ; korzystamy ze schematu Horner'a
+    mov     r12D, dword [args_num]  ; wczytujemy liczbę współ. wiel. diakryt.
+    lea     rbp, [rsp]              ; adres a_n
+    sub     ebx, 0x80               ; argument wielomian, tj. x
 
+    mov     eax, [rbp]              ; w rejestrze eax będziemy przechowywać bieżącą wartość wiel. diakryt.
+    add     rbp, 8                  ; kolejny współczynnik
+    dec     r12D                    ; zmniejszamy licznik
+
+poly_loop:
+    test    r12D, r12D              ; sprawdzamy czy policzyliśmy
+    jz      end_loop                ; policzyliśmy wartość
+
+    mul     ebx                     ; mnożymy przez x
+    add     eax, [rbp]              ; dodajemy kolejny wspóczynnik
+    idiv    r10D                    ; wyliczamy obecną wartość modulo
+    mov     eax, edx                ; przesuwamy resztę modulo do rejestru eax
+
+    add     rbp, 8                  ; kolejny współczynnik
+    dec     r12D                    ; zmniejszamy licznik
+
+    jmp poly_loop
+
+end_loop:
+    add     eax, 0x80;              ; dodajemy na koniec do wyliczonej wartości 0x80
+
+
+; mamy policzoną wartość hex na podstawie zadanego wielomianu diakrytynizującego
+; w rejestrze rax znajduje się ta wartość w hex, chcemy ją teraz skonwertować
+; z powrotem na utf8
 hex_to_ascii:
-    ; konwertujemy hex na ascii
+    mov     ecx, eax
+    ; konwertujemy hex na utf8
+    cmp     ecx, 0x00040000         ; sprawdzamy czy kodowanie na 4bitach
+    jae     byte4_to_utf
+
+    cmp     ecx, 0x00001000         ; sprawdzamy czy kodowanie na 3bitach
+    jae     byte3_to_utf
+
+    cmp     ecx, 0x00000040         ; sprawdzamy czy kodowanie na 2bitach
+    jae     byte2_to_utf
+
+    jmp     failure
+
+byte2_to_utf:
+    mov     r12D, 0x0000C080
+    mov     r8D, 2                  ; w rejestrze r8 zachowujemy długość zapisu bitowego wyliczonego kodu
+    mov     r9D, 0x00001F3F             ; maska bitowa konwersji z hex na utf8
+    pdep    eax, ecx, r9D           ; rzeczywista konwersja na utf8
+    xor     eax, r12D
+    ; shl     eax, 16                 ; przesuwamy o 16 bitów w lewo
+    jmp     write_to_buffer
+
+byte3_to_utf:
+    mov     r12D, 0x00E08080
+    mov     r8D, 3
+    mov     r9D, 0x000F3F3F           ; maska bitowa konwersji z hex na utf8
+    pdep    eax, ecx, r9D           ; rzeczywista konwersja na utf8
+    xor     eax, r12D
+    ; shl     eax, 8                  ; przesuwamy o 8 bitów w lewo
+    jmp     write_to_buffer
+
+byte4_to_utf:
+    mov     r12D, 0xF0808080
+    mov     r8D, 4
+    mov     r9D, 0x073F3F3F         ; maska bitowa konwersji z hex na utf8
+    pdep    eax, ecx, r9D           ; rzeczywista konwersja na utf8
+    xor     eax, r12D
+    jmp     write_to_buffer
+
+; chcemy odpowiednio zapisać do naszego bufora kodowanie skonwertowanego znaku w utf8
+write_to_buffer:
+    ; mov     dword [buffer], eax     ; zapisujemy w buforze skonwertowany znak w utf8
+    mov     r9, buffer              ; do bufora wypisujemy kolejne bity
+    mov     ecx, r8D                ; inicjalizujemy licznik
+    xor     r12, r12
+
+    ; TEST
+    ; mov     eax, ebx                ; w eax zapisujemy reprezentację bitową
+    ; /TEST
+
+write_loop:
+    test    ecx, ecx                ; sprawdzamy czy licznik jest wyzerowany
+    jz      print
+
+    dec     ecx
+    lea     r12, [r9 + rcx]
+    mov     [r12], al ; wypisujemy do bufora od końca
+    shr     eax, 8                  ; przesuwamy o 8bitów w prawo
+    jmp     write_loop
 
 plain_ascii:
     mov     r8, 1
@@ -267,6 +375,7 @@ plain_ascii:
 
 print:
     ; wypisujemy skonwertowany znak
+
 
     ; TEST
     mov     rax, SYS_WRITE
