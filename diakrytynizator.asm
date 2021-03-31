@@ -158,20 +158,20 @@ input_reader:
 
     ; 11110xxx (10xxxxxx)^3 - 4bajty
     mov     r12D, 3                 ; tu trzymamy liczbę bitów, które jeszcze chcemy wczytać
+    cmp     bl, 0xF8
+    jae     failure                  ; niepoprawne kodowanie w UTF-8
     cmp     bl, 0xF0
-    ja      rest_reader             ; mamy znak kodowany na 4 bajtach
-    je      failure                 ; można tę liczbę zapisać krócej
+    jae      rest_reader             ; mamy znak kodowany na 4 bajtach
 
     ; 1110xxxx (10xxxxxx)^2 - 3bajty
     dec     r12D                    ; jeśli coś będzie poprawne to będzie miało max 2 bajty do wczytania
     cmp     bl, 0xE0
-    ja      rest_reader             ; mamy znak kodowany na 3 bajtach
-    je      failure                 ; można tę liczbę zapisać krócej
+    jae     rest_reader             ; mamy znak kodowany na 3 bajtach
 
     ; 110xxxxx 10xxxxxx     - 2bajty
     dec     r12D
     cmp     bl, 0xC0                ; jeśli coś będzie poprawne to wczytamy max 1 bajt
-    ja      rest_reader             ; mamy znak kodowany na 2 bajtach
+    jae     rest_reader             ; mamy znak kodowany na 2 bajtach
 
     jmp     failure                 ; niepoprawne kodowanie w UTF-8
 
@@ -179,7 +179,8 @@ input_reader:
 ; wczytujemy pozostałe bity kodujące obecnie przetwarzany znak
 rest_reader:
     mov     r13, buffer               ; do bufora będziemy wczytywać kolejne bajty
-    lea     r8, [r12 + 1]             ; pamiętamy liczbę bajtów które ma nasz znak
+    mov     r8, r12                   ; pamiętamy liczbę bajtów które ma nasz znak
+    inc     r8
 
     mov     byte [r13], bl            ; buforujemy to co właśnie wczytaliśmy
     inc     r13
@@ -262,18 +263,26 @@ ascii_to_hex:
     jmp failure
 
 byte2_to_hex:
-    mov     r9D, 0x00001F3F             ; maska bitowa konwersji z utf8 na hex
+    mov     r9D, 0x00001F3F         ; maska bitowa konwersji z utf8 na hex
     pext    ebx, eax, r9D           ; rzeczywista konwersja na hex
+    cmp     ebx, 0x80
+    jb      failure                 ; to nie jest najkrótszy zapis
     jmp     poly
 
 byte3_to_hex:
-    mov     r9D, 0x000F3F3F           ; maska bitowa konwersji z utf8 na hex
+    mov     r9D, 0x000F3F3F         ; maska bitowa konwersji z utf8 na hex
     pext    ebx, eax, r9D           ; rzeczywista konwersja na hex
+    cmp     ebx, 0x0800
+    jb      failure                 ; to nie jest najkrótszy zapis
     jmp     poly
 
 byte4_to_hex:
     mov     r9D, 0x073F3F3F         ; maska bitowa konwersji z utf8 na hex
     pext    ebx, eax, r9D           ; rzeczywista konwersja na hex
+    cmp     ebx, 0x10FFFF
+    ja     failure                 ; przekroczenie górnego ograniczenia na UTF-8
+    cmp     ebx, 0x010000
+    jb      failure                 ; to nie jest najkrótszy zapis
     jmp     poly
 
 poly:
@@ -311,13 +320,13 @@ end_loop:
 hex_to_ascii:
     mov     ecx, eax
     ; konwertujemy hex na utf8
-    cmp     ecx, 0x00040000         ; sprawdzamy czy kodowanie na 4bitach
+    cmp     ecx, 0x10000            ; sprawdzamy czy kodowanie na 4bitach
     jae     byte4_to_utf
 
-    cmp     ecx, 0x00001000         ; sprawdzamy czy kodowanie na 3bitach
+    cmp     ecx, 0x800         ; sprawdzamy czy kodowanie na 3bitach
     jae     byte3_to_utf
 
-    cmp     ecx, 0x00000040         ; sprawdzamy czy kodowanie na 2bitach
+    cmp     ecx, 0x80         ; sprawdzamy czy kodowanie na 2bitach
     jae     byte2_to_utf
 
     jmp     failure
